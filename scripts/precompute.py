@@ -18,7 +18,7 @@ def main() -> None:
     konfig = Konfigurasi()
 
     print(f"Menu utama : {len(data.utama)}")
-    print(f"Lauk       : {len(data.lauk)} (+1 pilihan tanpa lauk)")
+    print(f"Lauk       : {len(data.lauk)}")
     print(f"Minuman    : {len(data.minum)}")
     print(f"Total kombinasi: {data.total_kombinasi}")
 
@@ -29,22 +29,26 @@ def main() -> None:
     with output_path.open("w", encoding="utf-8") as f:
         json.dump(hasil, f, indent=2, ensure_ascii=False, allow_nan=False)
 
+    fs = hasil["front_sejati"]
     print(
-        f"\nKombinasi lolos batasan: {hasil['jumlah_kombinasi_lolos']} "
+        f"\nLolos batasan   : {hasil['jumlah_kombinasi_lolos']} "
         f"({hasil['jumlah_kombinasi_lolos'] / hasil['total_kombinasi'] * 100:.2f}%)"
     )
     print(
-        f"Front sejati: {len(hasil['front_sejati']['F'])} solusi | "
-        f"HV = {hasil['front_sejati']['hv']:.4f}"
+        f"Front sejati    : {fs['jumlah_titik']} titik, {fs['jumlah_menu']} menu | "
+        f"HV = {fs['hv']:.4f} | Spacing = {fs['spacing']:.4f}"
     )
+
     for nama, info in hasil["algoritma"].items():
         print(f"\n=== {nama} ===")
         for m, stat in info["ringkasan"].items():
             print(f"  {m:15s}: {stat['mean']:.4f} ± {stat['std']:.4f}")
-    w = hasil["wilcoxon_hv"]
-    status = "signifikan" if w["signifikan"] else "tidak signifikan"
-    print(f"\nWilcoxon rank-sum (HV): p = {w['p_value']:.4f} -> {status}")
-    print(f"Tersimpan ke: {output_path}")
+        print(f"  Distribusi titik sejati: {info['distribusi_titik_sejati']}")
+
+    for m, w in hasil["wilcoxon"].items():
+        status = "signifikan" if w["signifikan"] else "tidak signifikan"
+        print(f"\nWilcoxon {m}: p = {w['p_value']:.4f} -> {status}")
+    print(f"\nTersimpan ke: {output_path}")
 
 
 if __name__ == "__main__":

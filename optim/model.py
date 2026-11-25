@@ -1,11 +1,13 @@
 """Model optimasi multi-objektif: evaluasi, dominasi Pareto, dan brute force."""
 
 from dataclasses import dataclass
+from itertools import product
 
 import numpy as np
 import pandas as pd
 
 from optim.data import DataMenu
+from optim.metrik import TITIK_ACUAN
 
 
 @dataclass(frozen=True)
@@ -24,7 +26,7 @@ def nama_menu(x: np.ndarray | list[int], data: DataMenu) -> str:
     """Membentuk nama kombinasi menu dari vektor x = [utama, lauk, minuman]."""
     return (
         f"{data.utama['Item'][int(x[0])]} + "
-        f"{data.nama_lauk[int(x[1])]} + "
+        f"{data.lauk['Item'][int(x[1])]} + "
         f"{data.minum['Item'][int(x[2])]}"
     )
 
@@ -43,73 +45,73 @@ def evaluasi(
     if len(X) == 0:
         return np.empty((0, 2), dtype=float), np.empty((0,), dtype=bool)
     total = hitung_gizi(X, data)
-    kal, prot, serat, natrium, gula, lemak = total.T
-    f1 = np.abs(kal - konfig.target_kalori)
-    f2 = np.clip(konfig.target_protein - prot, 0, None) + np.clip(
-        konfig.target_serat - serat, 0, None
-    )
-    # Penalty: besar pelanggaran (dinormalisasi terhadap batasnya)
-    pelanggaran = (
-        np.clip(natrium - konfig.maks_natrium, 0, None) / konfig.maks_natrium
-        + np.clip(gula - konfig.maks_gula, 0, None) / konfig.maks_gula
-        + np.clip(lemak - konfig.maks_lemak_jenuh, 0, None) / konfig.maks_lemak_jenuh
-    )
-    F = np.c_[f1 + 1000 * pelanggaran, f2 + 100 * pelanggaran]
-    return F, pelanggaran == 0
+    kalori, protein, serat, natrium, gula, lemak = total.T
+
+    f1 = np.abs(kalori - konfig.target_kalori)
+
+    kurang_protein = np.maximum(konfig.target_protein - protein, 0)
+    kurang_serat = np.maximum(konfig.target_serat - serat, 0)
+    f2 = kurang_protein + kurang_serat
+
+    # Kelebihan dibagi batasnya supaya ketiganya setara
+    lebih_natrium = np.maximum(natrium - konfig.maks_natrium, 0) / konfig.maks_natrium
+    lebih_gula = np.maximum(gula - konfig.maks_gula, 0) / konfig.maks_gula
+    lebih_lemak = np.maximum(lemak - konfig.maks_lemak_jenuh, 0) / konfig.maks_lemak_jenuh
+    pelanggaran = lebih_natrium + lebih_gula + lebih_lemak
+
+    # Pengali dibuat besar supaya solusi yang melanggar selalu kalah
+    F = np.column_stack([f1 + 1000 * pelanggaran, f2 + 100 * pelanggaran])
+    lolos = pelanggaran == 0
+    return F, lolos
 
 
 def non_dominasi(F: np.ndarray) -> list[int]:
     """Mengembalikan indeks solusi yang tidak didominasi solusi lain (minimisasi)."""
-    return [
-        i
-        for i in range(len(F))
-        if not np.any(np.all(F <= F[i], axis=1) & np.any(F < F[i], axis=1))
-    ]
+    hasil = []
+    for i in range(len(F)):
+        kalah = np.all(F <= F[i], axis=1) & np.any(F < F[i], axis=1)
+        if not kalah.any():
+            hasil.append(i)
+    return hasil
 
 
 def ambil_pareto(
     X: np.ndarray, data: DataMenu, konfig: Konfigurasi
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Mengambil solusi unik yang lolos batasan dan non-dominasi."""
+    """Mengambil solusi unik yang lolos batasan dan non-dominasi (menu kembar tetap disimpan)."""
     if len(X) == 0:
         return np.empty((0, 3), dtype=int), np.empty((0, 2), dtype=float)
     X = np.unique(X, axis=0)
     F, lolos = evaluasi(X, data, konfig)
     X, F = X[lolos], F[lolos]
-    if len(F) == 0:
+    if len(X) == 0:
         return X, F
     idx = non_dominasi(F)
-    X, F = X[idx], F[idx]
-    F, u = np.unique(F, axis=0, return_index=True)
-    return X[u], F
+    return X[idx], F[idx]
 
 
 def brute_force(
     data: DataMenu, konfig: Konfigurasi
 ) -> tuple[np.ndarray, np.ndarray, int]:
-    """Mencari Pareto front sejati dan jumlah kombinasi lolos batasan."""
-    semua = (
-        np.array(
-            np.meshgrid(
-                *[np.arange(b + 1) for b in data.batas_atas], indexing="ij"
-            )
-        )
-        .reshape(3, -1)
-        .T
+    """Mencari Pareto front sejati dari semua kombinasi menggunakan non_dominasi."""
+    semua = np.array(
+        list(product(range(len(data.utama)), range(len(data.lauk)), range(len(data.minum))))
     )
     F_semua, lolos = evaluasi(semua, data, konfig)
     jumlah_lolos = int(lolos.sum())
     if jumlah_lolos == 0:
         return np.empty((0, 3), dtype=int), np.empty((0, 2), dtype=float), 0
 
-    X_lolos, F_lolos = semua[lolos], F_semua[lolos]
-    urut = np.lexsort((F_lolos[:, 1], F_lolos[:, 0]))
-    idx_pf, terbaik = [], np.inf
-    for i in urut:  # cara cepat mencari front untuk 2 objektif
-        if F_lolos[i, 1] < terbaik:
-            idx_pf.append(i)
-            terbaik = F_lolos[i, 1]
-    X_sejati, F_sejati = X_lolos[idx_pf], F_lolos[idx_pf]
+    X_lolos = semua[lolos]
+    F_lolos = F_semua[lolos]
+
+    idx = non_dominasi(F_lolos)
+    X_sejati = X_lolos[idx]
+    F_sejati = F_lolos[idx]
+
+    # Urutkan dari f1 terkecil supaya enak dibaca
+    urutan = np.argsort(F_sejati[:, 0])
+    X_sejati, F_sejati = X_sejati[urutan], F_sejati[urutan]
     return X_sejati, F_sejati, jumlah_lolos
 
 
@@ -145,37 +147,49 @@ def tabel_solusi(X: np.ndarray, F: np.ndarray, data: DataMenu) -> pd.DataFrame:
                 "f2": float(f[1]),
             }
         )
-    return pd.DataFrame(baris, columns=kolom).sort_values(["f1", "f2"]).reset_index(drop=True)
+    return pd.DataFrame(baris, columns=kolom).sort_values(["f1", "f2", "Nama Menu"]).reset_index(drop=True)
 
 
 def pilih_rekomendasi(
-    X: np.ndarray, F: np.ndarray, data: DataMenu
+    X: np.ndarray,
+    F: np.ndarray,
+    data: DataMenu,
+    titik_acuan: np.ndarray = TITIK_ACUAN,
 ) -> list[dict[str, object]]:
-    """Memilih 3 menu rekomendasi dari front Pareto (logika sel terakhir notebook)."""
+    """Memilih 3 titik rekomendasi dari front Pareto dan menyertakan semua menu di tiap titik."""
     if len(X) == 0 or len(F) == 0:
         return []
 
+    F_norm = F / titik_acuan
     pilihan = {
-        "Paling dekat target kalori": int(np.argmin(F[:, 0])),
-        "Paling lengkap protein & serat": int(np.argmin(F[:, 1])),
-        "Kompromi": int(np.argmin(np.linalg.norm(F / F.max(0).clip(1), axis=1))),
+        "Paling dekat target kalori": F[np.argmin(F[:, 0])],
+        "Paling lengkap protein dan serat": F[np.argmin(F[:, 1])],
+        "Kompromi": F[np.argmin(np.linalg.norm(F_norm, axis=1))],
     }
+
     hasil = []
-    for label, i in pilihan.items():
-        x = X[i]
-        total = hitung_gizi(np.array([x]), data)[0]
+    for label, titik in pilihan.items():
+        sama = np.all(F == titik, axis=1)
+        menu_list = []
+        for x in X[sama]:
+            total = hitung_gizi(np.array([x]), data)[0]
+            menu_list.append(
+                {
+                    "nama_menu": nama_menu(x, data),
+                    "kalori": float(total[0]),
+                    "protein": float(total[1]),
+                    "serat": float(total[2]),
+                    "natrium": float(total[3]),
+                    "gula": float(total[4]),
+                    "lemak_jenuh": float(total[5]),
+                }
+            )
         hasil.append(
             {
                 "label": label,
-                "nama_menu": nama_menu(x, data),
-                "kalori": float(total[0]),
-                "protein": float(total[1]),
-                "serat": float(total[2]),
-                "natrium": float(total[3]),
-                "gula": float(total[4]),
-                "lemak_jenuh": float(total[5]),
-                "f1": float(F[i, 0]),
-                "f2": float(F[i, 1]),
+                "f1": float(titik[0]),
+                "f2": float(titik[1]),
+                "menus": menu_list,
             }
         )
     return hasil

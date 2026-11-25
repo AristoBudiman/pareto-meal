@@ -13,7 +13,7 @@ from optim.model import (
     tabel_solusi,
 )
 from optim.metrik import TITIK_ACUAN, hypervolume, igd, spacing
-from optim.algoritma import jalankan_eksperimen, moga, mopso
+from optim.algoritma import jalankan_eksperimen, kotak_grid, moga, mopso
 
 __all__ = [
     "DataMenu",
@@ -27,6 +27,7 @@ __all__ = [
     "hypervolume",
     "igd",
     "jalankan_eksperimen",
+    "kotak_grid",
     "moga",
     "mopso",
     "muat_data",

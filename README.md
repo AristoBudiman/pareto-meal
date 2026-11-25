@@ -23,7 +23,7 @@ pareto-meal/
 
 ## Cara Menjalankan Lokal
 
-1. Pastikan Python 3.10+ sudah terpasang.
+1. Pastikan Python 3.12+ sudah terpasang.
 2. (Opsional) Buat dan aktifkan virtual environment:
    ```bash
    python -m venv .venv

@@ -37,33 +37,28 @@ def muat_data(path_csv: str | Path = DEFAULT_CSV_PATH) -> DataMenu:
     """Memuat menu.csv dan mengelompokkannya menjadi slot utama, lauk, dan minuman."""
     df = pd.read_csv(path_csv)
 
-    # Buang porsi sharing (McNuggets 20 & 40 piece)
-    df = df[~df["Item"].str.contains(r"\((?:20|40) piece\)")]
+    kategori_utama = ["Breakfast", "Beef & Pork", "Chicken & Fish", "Salads"]
+    kategori_minum = ["Beverages", "Coffee & Tea", "Smoothies & Shakes"]
 
-    # Kelompokkan menjadi 3 slot
-    utama = df[
-        df["Category"].isin(["Breakfast", "Beef & Pork", "Chicken & Fish", "Salads"])
-        & (df["Item"] != "Hash Brown")
-    ].reset_index(drop=True)
-    lauk = pd.concat(
-        [
-            df[df["Category"] == "Snacks & Sides"],
-            df[df["Item"] == "Hash Brown"],
-        ]
-    ).reset_index(drop=True)
-    minum = df[
-        df["Category"].isin(["Beverages", "Coffee & Tea", "Smoothies & Shakes"])
-    ].reset_index(drop=True)
+    utama = df[df["Category"].isin(kategori_utama)]
+    minum = df[df["Category"].isin(kategori_minum)]
+
+    # Opsi tanpa lauk, semua nilai gizinya 0 dan diletakkan di index 0
+    tanpa_lauk = pd.DataFrame([{kolom: 0 for kolom in df.columns}])
+    tanpa_lauk["Item"] = "(tanpa lauk)"
+    lauk = pd.concat([tanpa_lauk, df[df["Category"] == "Snacks & Sides"]])
+
+    # Index dipakai sebagai nomor menu di kromosom
+    utama = utama.reset_index(drop=True)
+    lauk = lauk.reset_index(drop=True)
+    minum = minum.reset_index(drop=True)
 
     gizi_utama = utama[KOLOM_GIZI].values
-    # Baris 0 = tanpa lauk
-    gizi_lauk = np.vstack([np.zeros(len(KOLOM_GIZI)), lauk[KOLOM_GIZI].values])
+    gizi_lauk = lauk[KOLOM_GIZI].values
     gizi_minum = minum[KOLOM_GIZI].values
-    batas_atas = np.array(
-        [len(gizi_utama) - 1, len(gizi_lauk) - 1, len(gizi_minum) - 1]
-    )
-    nama_lauk = ["(tanpa lauk)"] + list(lauk["Item"])
-    total_kombinasi = len(utama) * (len(lauk) + 1) * len(minum)
+    batas_atas = np.array([len(utama) - 1, len(lauk) - 1, len(minum) - 1])
+    nama_lauk = list(lauk["Item"])
+    total_kombinasi = len(utama) * len(lauk) * len(minum)
 
     return DataMenu(
         utama=utama,
