@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from optim.data import DataMenu
-from optim.metrik import TITIK_ACUAN
+from optim.metrik import hitung_titik_acuan
 
 
 @dataclass(frozen=True)
@@ -147,20 +147,25 @@ def tabel_solusi(X: np.ndarray, F: np.ndarray, data: DataMenu) -> pd.DataFrame:
                 "f2": float(f[1]),
             }
         )
-    return pd.DataFrame(baris, columns=kolom).sort_values(["f1", "f2", "Nama Menu"]).reset_index(drop=True)
+    return (
+        pd.DataFrame(baris, columns=kolom)
+        .sort_values(["f1", "f2", "Nama Menu"])
+        .reset_index(drop=True)
+    )
 
 
 def pilih_rekomendasi(
     X: np.ndarray,
     F: np.ndarray,
     data: DataMenu,
-    titik_acuan: np.ndarray = TITIK_ACUAN,
+    titik_acuan: np.ndarray | None = None,
 ) -> list[dict[str, object]]:
     """Memilih 3 titik rekomendasi dari front Pareto dan menyertakan semua menu di tiap titik."""
     if len(X) == 0 or len(F) == 0:
         return []
 
-    F_norm = F / titik_acuan
+    acuan = hitung_titik_acuan(F) if titik_acuan is None else titik_acuan
+    F_norm = F / acuan
     pilihan = {
         "Paling dekat target kalori": F[np.argmin(F[:, 0])],
         "Paling lengkap protein dan serat": F[np.argmin(F[:, 1])],

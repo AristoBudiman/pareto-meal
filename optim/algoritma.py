@@ -1,4 +1,4 @@
-"""Implementasi MOGA (Fonseca & Fleming 1993), MOPSO (Coello dkk. 2004), dan eksperimen."""
+"""Implementasi MOGA, MOPSO, eksperimen utama, dan eksperimen multi-skenario."""
 
 import time
 from collections.abc import Callable
@@ -8,7 +8,7 @@ import numpy as np
 from scipy.stats import ranksums
 
 from optim.data import DataMenu
-from optim.metrik import hypervolume, igd, spacing
+from optim.metrik import a12, hitung_titik_acuan, hypervolume, igd, spacing
 from optim.model import (
     Konfigurasi,
     ambil_pareto,
@@ -17,6 +17,41 @@ from optim.model import (
     nama_menu,
     non_dominasi,
 )
+
+SKENARIO_DEFAULT: dict[str, Konfigurasi] = {
+    "S1 Baseline": Konfigurasi(
+        target_kalori=600.0,
+        target_protein=25.0,
+        target_serat=8.0,
+        maks_natrium=800.0,
+        maks_gula=17.0,
+        maks_lemak_jenuh=7.0,
+    ),
+    "S2 Batasan sedang": Konfigurasi(
+        target_kalori=600.0,
+        target_protein=25.0,
+        target_serat=8.0,
+        maks_natrium=700.0,
+        maks_gula=12.0,
+        maks_lemak_jenuh=6.0,
+    ),
+    "S3 Batasan ketat": Konfigurasi(
+        target_kalori=600.0,
+        target_protein=25.0,
+        target_serat=8.0,
+        maks_natrium=600.0,
+        maks_gula=10.0,
+        maks_lemak_jenuh=5.0,
+    ),
+    "S4 Target 800 kkal": Konfigurasi(
+        target_kalori=800.0,
+        target_protein=35.0,
+        target_serat=10.0,
+        maks_natrium=800.0,
+        maks_gula=17.0,
+        maks_lemak_jenuh=7.0,
+    ),
+}
 
 
 def moga(
@@ -29,7 +64,6 @@ def moga(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Multi-Objective Genetic Algorithm mengikuti Fonseca & Fleming (1993)."""
     batas_atas = data.batas_atas
-    # Sigma share untuk 2 objektif yang sudah dinormalisasi
     sigma = 2 / (N - 1)
 
     X = np.column_stack([rng.integers(0, b + 1, N) for b in batas_atas])
@@ -38,23 +72,18 @@ def moga(
     for g in range(generasi):
         F, _ = evaluasi(X, data, konfig)
 
-        # Rank = 1 + jumlah solusi yang mendominasi
         rank = np.array(
             [1 + np.sum(np.all(F <= f, axis=1) & np.any(F < f, axis=1)) for f in F]
         )
 
-        # Fitness diinterpolasi linear dari N (rank terbaik) sampai 1 (rank terburuk)
         urutan = np.argsort(rank, kind="stable")
         fitness = np.zeros(N)
         fitness[urutan] = np.linspace(N, 1, N)
 
         for r in np.unique(rank):
             anggota = np.where(rank == r)[0]
-
-            # Solusi dengan rank yang sama diberi fitness yang sama
             fitness[anggota] = fitness[anggota].mean()
 
-            # Sharing hanya di antara solusi dengan rank yang sama
             Fr = F[anggota]
             Fr = (Fr - Fr.min(axis=0)) / (np.ptp(Fr, axis=0) + 1e-9)
             jarak = np.abs(Fr[:, None] - Fr[None]).max(axis=2)
@@ -75,7 +104,6 @@ def moga(
         for i in range(0, N, 2):
             p1, p2 = X[terpilih[i]], X[terpilih[i + 1]]
 
-            # Crossover uniform, tiap gen diambil dari salah satu induk
             ambil_p1 = rng.random(3) < 0.5
             for child in (np.where(ambil_p1, p1, p2), np.where(ambil_p1, p2, p1)):
                 for j in range(3):
@@ -86,7 +114,6 @@ def moga(
         X = np.array(anak)
         arsip = np.vstack([arsip, X])
 
-        # Arsip dirapikan tiap 20 generasi supaya tidak terlalu besar
         if g % 20 == 0:
             X_arsip, _ = ambil_pareto(arsip, data, konfig)
             if len(X_arsip) > 0:
@@ -128,7 +155,6 @@ def mopso(
     arsip, F_arsip = bulat(X)[idx], F[idx]
 
     for t in range(iterasi):
-        # Pilih leader: hypercube yang lebih sepi punya peluang lebih besar
         kotak = kotak_grid(F_arsip, n_divisi)
         isi_kotak, jumlah = np.unique(kotak, return_counts=True)
         peluang = (10 / jumlah) / (10 / jumlah).sum()
@@ -141,12 +167,10 @@ def mopso(
         V = w * V + r1 * (pbest - X) + r2 * (leader - X)
         X = X + V
 
-        # Kalau keluar batas, posisi ditahan di batas dan arah kecepatan dibalik
         keluar = (X < 0) | (X > batas_atas)
         X = np.clip(X, 0, batas_atas)
         V[keluar] *= -1
 
-        # Mutasi, peluangnya mengecil sampai 0 di akhir iterasi
         pm = (1 - t / iterasi) ** (5 / laju_mutasi)
         for i in range(N):
             if rng.random() < pm:
@@ -158,7 +182,6 @@ def mopso(
 
         F, _ = evaluasi(bulat(X), data, konfig)
 
-        # Update arsip, hanya simpan yang non-dominasi
         arsip = np.vstack([arsip, bulat(X)])
         F_arsip = np.vstack([F_arsip, F])
         arsip, unik = np.unique(arsip, axis=0, return_index=True)
@@ -166,7 +189,6 @@ def mopso(
         idx = non_dominasi(F_arsip)
         arsip, F_arsip = arsip[idx], F_arsip[idx]
 
-        # Kalau arsip penuh, buang dari hypercube yang paling ramai
         while len(arsip) > maks_arsip:
             kotak = kotak_grid(F_arsip, n_divisi)
             isi_kotak, jumlah = np.unique(kotak, return_counts=True)
@@ -176,7 +198,6 @@ def mopso(
                 F_arsip, buang, axis=0
             )
 
-        # Update pbest
         for i in range(N):
             baru_menang = np.all(F[i] <= F_pbest[i]) and np.any(F[i] < F_pbest[i])
             lama_menang = np.all(F_pbest[i] <= F[i]) and np.any(F_pbest[i] < F[i])
@@ -192,17 +213,10 @@ def _ke_json_nilai(nilai: float) -> float | None:
 
 
 def _hitung_titik_sejati_ditemukan(F: np.ndarray, F_sejati_unik: np.ndarray) -> int:
-    """Menghitung berapa banyak titik unik front sejati yang ditemukan dalam satu run."""
+    """Menghitung berapa banyak titik unik front sejati yang benar-benar ditemukan."""
     if len(F) == 0 or len(F_sejati_unik) == 0:
         return 0
-    F_unik = np.unique(F, axis=0)
-    return int(
-        sum(
-            1
-            for titik in F_sejati_unik
-            if np.any(np.all(F_unik == titik, axis=1))
-        )
-    )
+    return int(sum(np.any(np.all(F == t, axis=1)) for t in F_sejati_unik))
 
 
 def jalankan_eksperimen(
@@ -216,6 +230,7 @@ def jalankan_eksperimen(
         konfig = Konfigurasi()
 
     X_sejati, F_sejati, jumlah_lolos = brute_force(data, konfig)
+    titik_acuan = hitung_titik_acuan(F_sejati)
     F_sejati_unik = (
         np.unique(F_sejati, axis=0)
         if len(F_sejati) > 0
@@ -241,16 +256,15 @@ def jalankan_eksperimen(
         titik_sejati_per_run = []
 
         for seed in range(jumlah_run):
-            # Seed sama untuk kedua algoritma supaya adil dan bisa diulang
             rng = np.random.default_rng(seed)
 
             mulai = time.time()
             X, F = algoritma(rng, data, konfig)
             catatan["Waktu (detik)"].append(float(time.time() - mulai))
 
-            catatan["HV"].append(float(hypervolume(F)))
-            catatan["Spacing"].append(float(spacing(F)))
-            catatan["IGD"].append(float(igd(F, F_sejati)))
+            catatan["HV"].append(float(hypervolume(F, titik_acuan)))
+            catatan["Spacing"].append(float(spacing(F, titik_acuan)))
+            catatan["IGD"].append(float(igd(F, F_sejati, titik_acuan)))
             catatan["Jumlah titik"].append(
                 int(len(np.unique(F, axis=0))) if len(F) > 0 else 0
             )
@@ -304,7 +318,8 @@ def jalankan_eksperimen(
 
     wilcoxon = {}
     for m in ["HV", "IGD"]:
-        uji = ranksums(metrik_mentah[m]["MOGA"], metrik_mentah[m]["MOPSO"])
+        kw = {"nan_policy": "omit"} if m == "IGD" else {}
+        uji = ranksums(metrik_mentah[m]["MOGA"], metrik_mentah[m]["MOPSO"], **kw)
         p_val = float(uji.pvalue)
         wilcoxon[m] = {
             "statistic": float(uji.statistic),
@@ -318,15 +333,130 @@ def jalankan_eksperimen(
         "jumlah_run": jumlah_run,
         "total_kombinasi": int(data.total_kombinasi),
         "jumlah_kombinasi_lolos": int(jumlah_lolos),
+        "titik_acuan": [float(titik_acuan[0]), float(titik_acuan[1])],
         "front_sejati": {
             "X": X_sejati.astype(int).tolist(),
             "F": F_sejati.astype(float).tolist(),
             "jumlah_titik": jumlah_titik_sejati,
             "jumlah_menu": int(len(X_sejati)),
-            "hv": float(hypervolume(F_sejati)),
-            "spacing": _ke_json_nilai(float(spacing(F_sejati))),
+            "hv": float(hypervolume(F_sejati, titik_acuan)),
+            "spacing": _ke_json_nilai(float(spacing(F_sejati, titik_acuan))),
             "menu": [nama_menu(x, data) for x in X_sejati],
         },
         "wilcoxon": wilcoxon,
         "algoritma": hasil_algo,
+    }
+
+
+def jalankan_multi_skenario(
+    data: DataMenu,
+    skenario: dict[str, Konfigurasi] | None = None,
+    jumlah_run: int = 30,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> dict:
+    """Menjalankan eksperimen 30 run pada beberapa skenario target dan batasan gizi."""
+    daftar_skenario = SKENARIO_DEFAULT if skenario is None else skenario
+    total_langkah = len(daftar_skenario) * 2 * jumlah_run
+    langkah = 0
+
+    hasil_skenario = {}
+    rekap_unggul: dict[str, int] = {}
+
+    for nama_s, konfig in daftar_skenario.items():
+        X_sejati, F_sejati, jumlah_lolos = brute_force(data, konfig)
+        titik_acuan = hitung_titik_acuan(F_sejati)
+        sejati_unik = (
+            np.unique(F_sejati, axis=0)
+            if len(F_sejati) > 0
+            else np.empty((0, 2), dtype=float)
+        )
+        n_sejati = int(len(sejati_unik))
+        hv_sejati = float(hypervolume(F_sejati, titik_acuan))
+
+        catat = {}
+        run_terbaik = {}
+        for nama, algoritma in [("MOGA", moga), ("MOPSO", mopso)]:
+            m: dict[str, list] = {
+                "HV": [],
+                "IGD": [],
+                "Jumlah titik": [],
+                "Titik sejati": [],
+            }
+            fronts = []
+            for seed in range(jumlah_run):
+                _, F = algoritma(np.random.default_rng(seed), data, konfig)
+                m["HV"].append(float(hypervolume(F, titik_acuan)))
+                m["IGD"].append(
+                    _ke_json_nilai(float(igd(F, F_sejati, titik_acuan)))
+                )
+                m["Jumlah titik"].append(
+                    int(len(np.unique(F, axis=0))) if len(F) > 0 else 0
+                )
+                m["Titik sejati"].append(
+                    _hitung_titik_sejati_ditemukan(F, sejati_unik)
+                )
+                fronts.append(F)
+
+                langkah += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        langkah,
+                        total_langkah,
+                        f"{nama_s} - {nama} run {seed + 1}/{jumlah_run}",
+                    )
+
+            idx_best = int(np.argmax(m["HV"]))
+            catat[nama] = m
+            run_terbaik[nama] = {
+                "seed": idx_best,
+                "hv": float(m["HV"][idx_best]),
+                "F": fronts[idx_best].astype(float).tolist(),
+            }
+
+        mg, mp = catat["MOGA"], catat["MOPSO"]
+        p_hv = float(ranksums(mg["HV"], mp["HV"]).pvalue)
+        igd_mg = [np.nan if v is None else v for v in mg["IGD"]]
+        igd_mp = [np.nan if v is None else v for v in mp["IGD"]]
+        p_igd = float(ranksums(igd_mg, igd_mp, nan_policy="omit").pvalue)
+        efek = float(a12(mg["HV"], mp["HV"]))
+
+        if p_hv >= 0.05:
+            unggul = "seri"
+        else:
+            unggul = "MOGA" if np.mean(mg["HV"]) > np.mean(mp["HV"]) else "MOPSO"
+
+        rekap_unggul[unggul] = rekap_unggul.get(unggul, 0) + 1
+
+        lengkap_moga = float(np.mean(np.array(mg["Titik sejati"]) == n_sejati) * 100)
+        lengkap_mopso = float(np.mean(np.array(mp["Titik sejati"]) == n_sejati) * 100)
+
+        hasil_skenario[nama_s] = {
+            "konfigurasi": asdict(konfig),
+            "lolos": int(jumlah_lolos),
+            "n_sejati": n_sejati,
+            "titik_acuan": [float(titik_acuan[0]), float(titik_acuan[1])],
+            "hv_sejati": hv_sejati,
+            "F_sejati": F_sejati.astype(float).tolist(),
+            "metrik": catat,
+            "run_terbaik": run_terbaik,
+            "ringkasan": {
+                "hv_moga_mean": float(np.mean(mg["HV"])),
+                "hv_moga_std": float(np.std(mg["HV"])),
+                "hv_mopso_mean": float(np.mean(mp["HV"])),
+                "hv_mopso_std": float(np.std(mp["HV"])),
+                "igd_moga_mean": _ke_json_nilai(float(np.nanmean(igd_mg))),
+                "igd_mopso_mean": _ke_json_nilai(float(np.nanmean(igd_mp))),
+                "lengkap_moga": lengkap_moga,
+                "lengkap_mopso": lengkap_mopso,
+                "p_hv": p_hv,
+                "p_igd": p_igd,
+                "a12_hv": efek,
+                "unggul": unggul,
+            },
+        }
+
+    return {
+        "jumlah_run": jumlah_run,
+        "skenario": hasil_skenario,
+        "rekap": rekap_unggul,
     }

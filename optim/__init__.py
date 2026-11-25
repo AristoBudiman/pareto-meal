@@ -12,21 +12,31 @@ from optim.model import (
     pilih_rekomendasi,
     tabel_solusi,
 )
-from optim.metrik import TITIK_ACUAN, hypervolume, igd, spacing
-from optim.algoritma import jalankan_eksperimen, kotak_grid, moga, mopso
+from optim.metrik import a12, hitung_titik_acuan, hypervolume, igd, spacing
+from optim.algoritma import (
+    SKENARIO_DEFAULT,
+    jalankan_eksperimen,
+    jalankan_multi_skenario,
+    kotak_grid,
+    moga,
+    mopso,
+)
 
 __all__ = [
     "DataMenu",
     "KOLOM_GIZI",
     "Konfigurasi",
-    "TITIK_ACUAN",
+    "SKENARIO_DEFAULT",
+    "a12",
     "ambil_pareto",
     "brute_force",
     "evaluasi",
     "hitung_gizi",
+    "hitung_titik_acuan",
     "hypervolume",
     "igd",
     "jalankan_eksperimen",
+    "jalankan_multi_skenario",
     "kotak_grid",
     "moga",
     "mopso",

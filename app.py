@@ -9,9 +9,14 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from optim.algoritma import jalankan_eksperimen, moga, mopso
+from optim.algoritma import (
+    jalankan_eksperimen,
+    jalankan_multi_skenario,
+    moga,
+    mopso,
+)
 from optim.data import DataMenu, muat_data
-from optim.metrik import hypervolume
+from optim.metrik import hitung_titik_acuan, hypervolume
 from optim.model import (
     Konfigurasi,
     ambil_pareto,
@@ -54,7 +59,7 @@ def brute_force_cached(
 
 @st.cache_data
 def muat_hasil_eksperimen_json() -> dict:
-    """Membaca hasil precompute 30 run dari data/hasil_eksperimen.json."""
+    """Membaca hasil precompute dari data/hasil_eksperimen.json."""
     with HASIL_JSON_PATH.open("r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -67,10 +72,11 @@ def buat_grafik_pareto(
     """Membuat grafik Pareto front (f1 vs f2) dengan front sejati sebagai acuan."""
     fig, ax = plt.subplots(figsize=(7.5, 4.8))
     if len(F_sejati) > 0:
-        ax.plot(F_sejati[:, 0], F_sejati[:, 1], "k--", alpha=0.4)
+        Fs = F_sejati[np.argsort(F_sejati[:, 0])]
+        ax.plot(Fs[:, 0], Fs[:, 1], "k--", alpha=0.4)
         ax.scatter(
-            F_sejati[:, 0],
-            F_sejati[:, 1],
+            Fs[:, 0],
+            Fs[:, 1],
             s=160,
             facecolors="none",
             edgecolors="k",
@@ -127,6 +133,27 @@ def buat_grafik_boxplot(hasil_json: dict) -> plt.Figure:
     return fig
 
 
+def buat_boxplot_hv_skenario(nama_s: str, sken: dict) -> plt.Figure:
+    """Membuat boxplot HV 30 run untuk satu skenario dengan garis HV front sejati."""
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    hv_moga = sken["metrik"]["MOGA"]["HV"]
+    hv_mopso = sken["metrik"]["MOPSO"]["HV"]
+    ax.boxplot([hv_moga, hv_mopso], tick_labels=["MOGA", "MOPSO"], patch_artist=True)
+    ax.axhline(
+        sken["hv_sejati"],
+        color="k",
+        ls="--",
+        alpha=0.6,
+        label=f"HV front sejati ({sken['hv_sejati']:.4f})",
+    )
+    ax.set_title(f"Distribusi HV — {nama_s}")
+    ax.set_ylabel("HV")
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
 def jalankan_mode_a(
     data: DataMenu,
     konfig: Konfigurasi,
@@ -142,6 +169,7 @@ def jalankan_mode_a(
         konfig.maks_gula,
         konfig.maks_lemak_jenuh,
     )
+    titik_acuan = hitung_titik_acuan(F_sejati)
 
     daftar = (
         [("MOGA", moga), ("MOPSO", mopso)]
@@ -161,7 +189,7 @@ def jalankan_mode_a(
             "X": X_a,
             "F": F_a,
             "waktu": waktu,
-            "hv": hypervolume(F_a),
+            "hv": hypervolume(F_a, titik_acuan) if jumlah_lolos > 0 else 0.0,
             "jumlah_titik": jumlah_titik,
         }
 
@@ -172,9 +200,10 @@ def jalankan_mode_a(
         "seed": seed,
         "X_sejati": X_sejati,
         "F_sejati": F_sejati,
+        "titik_acuan": titik_acuan,
         "jumlah_titik_sejati": jumlah_titik_sejati,
         "jumlah_lolos": jumlah_lolos,
-        "hv_sejati": hypervolume(F_sejati),
+        "hv_sejati": hypervolume(F_sejati, titik_acuan) if jumlah_lolos > 0 else 0.0,
         "hasil_algo": hasil_algo,
     }
 
@@ -216,6 +245,7 @@ def render_tab_rekomendasi(data: DataMenu) -> None:
     jumlah_lolos = hasil["jumlah_lolos"]
     persen_lolos = (jumlah_lolos / data.total_kombinasi) * 100
     konfig: Konfigurasi = hasil["konfig"]
+    titik_acuan: np.ndarray = hasil["titik_acuan"]
 
     if jumlah_lolos == 0:
         st.metric("Kombinasi lolos batasan", f"0 / {data.total_kombinasi:,}")
@@ -234,7 +264,10 @@ def render_tab_rekomendasi(data: DataMenu) -> None:
         st.caption(f"Dari {data.total_kombinasi:,} total kombinasi")
     with kolom_info[1]:
         st.metric("HV Front Sejati", f"{hasil['hv_sejati']:.4f}")
-        st.caption(f"{hasil['jumlah_titik_sejati']} titik ({len(hasil['F_sejati'])} menu)")
+        st.caption(
+            f"{hasil['jumlah_titik_sejati']} titik ({len(hasil['F_sejati'])} menu) | "
+            f"Acuan [{titik_acuan[0]:.0f}, {titik_acuan[1]:.0f}]"
+        )
     for idx, (nama, info) in enumerate(hasil_algo.items(), start=2):
         with kolom_info[idx]:
             st.metric(f"HV {nama}", f"{info['hv']:.4f}")
@@ -296,14 +329,16 @@ def render_tab_rekomendasi(data: DataMenu) -> None:
         else:
             nama_tunggal = next(iter(hasil_algo.keys()))
             st.caption(f"Dipilih dari solusi Pareto yang ditemukan oleh {nama_tunggal}.")
-        rekomendasi = pilih_rekomendasi(X_rek, F_rek, data)
+        rekomendasi = pilih_rekomendasi(X_rek, F_rek, data, titik_acuan=titik_acuan)
         tampilkan_kartu_rekomendasi(rekomendasi)
     else:
         st.info(
             "Algoritma tidak menemukan solusi yang lolos batasan pada seed ini. "
             "Berikut 3 rekomendasi acuan dari Pareto front sejati (brute force):"
         )
-        rekomendasi_sejati = pilih_rekomendasi(hasil["X_sejati"], hasil["F_sejati"], data)
+        rekomendasi_sejati = pilih_rekomendasi(
+            hasil["X_sejati"], hasil["F_sejati"], data, titik_acuan=titik_acuan
+        )
         tampilkan_kartu_rekomendasi(rekomendasi_sejati)
 
 
@@ -323,6 +358,7 @@ def render_tab_perbandingan(data: DataMenu) -> None:
     hasil = st.session_state["eksperimen_data"]
     konfig = hasil["konfigurasi"]
     fs = hasil["front_sejati"]
+    acuan = hasil["titik_acuan"]
     st.caption(
         f"Konfigurasi default: Target {konfig['target_kalori']:.0f} kkal, "
         f"Protein {konfig['target_protein']:.0f} g, Serat {konfig['target_serat']:.0f} g | "
@@ -342,7 +378,10 @@ def render_tab_perbandingan(data: DataMenu) -> None:
         st.caption(f"{persen_lolos:.2f}% dari {hasil['total_kombinasi']:,}")
     with c2:
         st.metric("Front sejati", f"{fs['jumlah_titik']} titik, {fs['jumlah_menu']} menu")
-        st.caption(f"HV = {fs['hv']:.4f} | Spacing = {fs['spacing']:.4f}")
+        st.caption(
+            f"HV = {fs['hv']:.4f} | Spacing = {fs['spacing']:.4f} | "
+            f"Acuan [{acuan[0]:.0f}, {acuan[1]:.0f}]"
+        )
     with c3:
         st.metric("Wilcoxon HV (p-value)", f"{w_hv['p_value']:.4f}")
         st.caption("Signifikan (α = 0.05)" if w_hv["signifikan"] else "Tidak signifikan (α = 0.05)")
@@ -430,23 +469,142 @@ def render_tab_perbandingan(data: DataMenu) -> None:
     st.pyplot(fig_pf)
     plt.close(fig_pf)
 
+    # Bagian Multi-skenario
+    st.divider()
+    st.markdown("## Multi-skenario")
+    st.markdown(
+        """
+Supaya kesimpulan perbandingan tidak bergantung pada satu konfigurasi saja, eksperimen diulang pada 4 skenario target dan batasan gizi.
+Setiap skenario dicari ulang front sejatinya dengan *brute force* dan dihitung ulang titik acuannya (`2 × nilai terburuk front sejati`), lalu MOGA dan MOPSO masing-masing dijalankan 30 kali (`seed` 0–29):
+
+- **S1 Baseline**: konfigurasi eksperimen utama (target `600 kkal`, protein `25 g`, serat `8 g`; natrium ≤ `800 mg`, gula ≤ `17 g`, lemak jenuh ≤ `7 g`).
+- **S2 Batasan sedang**: natrium ≤ `700 mg`, gula ≤ `12 g`, lemak jenuh ≤ `6 g` (memperketat batasan dari baseline).
+- **S3 Batasan ketat**: natrium ≤ `600 mg`, gula ≤ `10 g`, lemak jenuh ≤ `5 g` (menguji saat kombinasi layak makin sedikit).
+- **S4 Target 800 kkal**: target kalori `800 kkal`, protein `35 g`, serat `10 g` (untuk kebutuhan energi yang lebih tinggi).
+        """
+    )
+
+    multi = hasil.get("multi_skenario")
+    if multi:
+        sken_dict = multi["skenario"]
+        baris_sken = []
+        for nama_s, h in sken_dict.items():
+            r = h["ringkasan"]
+            baris_sken.append(
+                {
+                    "Skenario": nama_s,
+                    "Front sejati": h["n_sejati"],
+                    "HV sejati": round(h["hv_sejati"], 4),
+                    "HV MOGA": f"{r['hv_moga_mean']:.4f} ± {r['hv_moga_std']:.4f}",
+                    "HV MOPSO": f"{r['hv_mopso_mean']:.4f} ± {r['hv_mopso_std']:.4f}",
+                    "IGD MOGA": f"{r['igd_moga_mean']:.4f}",
+                    "IGD MOPSO": f"{r['igd_mopso_mean']:.4f}",
+                    "Lengkap MOGA": f"{r['lengkap_moga']:.0f}%",
+                    "Lengkap MOPSO": f"{r['lengkap_mopso']:.0f}%",
+                    "p HV": round(r["p_hv"], 4),
+                    "p IGD": round(r["p_igd"], 4),
+                    "A12 HV": round(r["a12_hv"], 2),
+                    "Unggul": r["unggul"],
+                }
+            )
+
+        st.markdown("### Tabel Ringkasan Multi-skenario")
+        st.dataframe(pd.DataFrame(baris_sken), width="stretch", hide_index=True)
+
+        rekap_teks = ", ".join(
+            f"**{k} {v}**" for k, v in multi["rekap"].items()
+        )
+        st.success(
+            f"**Rekap:** {rekap_teks} dari {len(baris_sken)} skenario "
+            f"(berdasarkan perbedaan HV signifikan menurut uji Wilcoxon, p < 0.05)."
+        )
+        st.caption(
+            "Kolom **Lengkap** = persentase run yang menemukan seluruh titik front sejati. "
+            "**A12 > 0.5** berarti HV MOGA cenderung lebih besar (patokan Vargha-Delaney: 0.56 kecil, 0.64 sedang, 0.71 besar)."
+        )
+
+        st.markdown("### Visualisasi per Skenario")
+        pilihan_sken = st.selectbox(
+            "Pilih skenario",
+            options=list(sken_dict.keys()),
+            index=0,
+        )
+        sken_aktif = sken_dict[pilihan_sken]
+        r_aktif = sken_aktif["ringkasan"]
+        acuan_s = sken_aktif["titik_acuan"]
+        st.caption(
+            f"**{pilihan_sken}** — Lolos batasan: **{sken_aktif['lolos']:,}** kombinasi | "
+            f"Front sejati: **{sken_aktif['n_sejati']} titik** (HV = {sken_aktif['hv_sejati']:.4f}) | "
+            f"Titik acuan: `[{acuan_s[0]:.0f}, {acuan_s[1]:.0f}]` | "
+            f"Lengkap: MOGA {r_aktif['lengkap_moga']:.0f}%, MOPSO {r_aktif['lengkap_mopso']:.0f}% | "
+            f"A12 HV: {r_aktif['a12_hv']:.2f}"
+        )
+
+        col_grafik1, col_grafik2 = st.columns(2)
+        with col_grafik1:
+            F_sejati_s = np.array(sken_aktif["F_sejati"], dtype=float)
+            F_moga_s = np.array(sken_aktif["run_terbaik"]["MOGA"]["F"], dtype=float)
+            F_mopso_s = np.array(sken_aktif["run_terbaik"]["MOPSO"]["F"], dtype=float)
+            fig_s = buat_grafik_pareto(
+                F_sejati_s,
+                [
+                    (
+                        f"MOGA (seed {sken_aktif['run_terbaik']['MOGA']['seed']})",
+                        F_moga_s,
+                        "tab:blue",
+                        "o",
+                    ),
+                    (
+                        f"MOPSO (seed {sken_aktif['run_terbaik']['MOPSO']['seed']})",
+                        F_mopso_s,
+                        "tab:orange",
+                        "x",
+                    ),
+                ],
+                f"Pareto Front Run Terbaik — {pilihan_sken}",
+            )
+            st.pyplot(fig_s)
+            plt.close(fig_s)
+
+        with col_grafik2:
+            fig_box_s = buat_boxplot_hv_skenario(pilihan_sken, sken_aktif)
+            st.pyplot(fig_box_s)
+            plt.close(fig_box_s)
+
     # Expander opsional untuk menjalankan ulang 30 run
     with st.expander("Jalankan ulang 30 run"):
         st.warning(
-            "Peringatan: Menjalankan ulang eksperimen 30 run untuk MOGA dan MOPSO "
-            "membutuhkan waktu sekitar 1 menit."
+            "Peringatan: Menjalankan ulang eksperimen utama dan seluruh 4 skenario (masing-masing 30 run "
+            "untuk MOGA dan MOPSO) membutuhkan waktu sekitar 3–4 menit."
         )
         if st.button("Mulai jalankan ulang 30 run", key="btn_rerun_30"):
             bar_progres = st.progress(0, text="Memulai eksperimen...")
+            total_utama = 60
+            total_sken = 4 * 60
+            total_semua = total_utama + total_sken
 
-            def update_progres(langkah: int, total: int, teks: str) -> None:
-                bar_progres.progress(langkah / total, text=f"Menjalankan {teks}...")
+            def update_utama(langkah: int, total: int, teks: str) -> None:
+                bar_progres.progress(
+                    langkah / total_semua,
+                    text=f"Eksperimen utama: {teks}...",
+                )
+
+            def update_sken(langkah: int, total: int, teks: str) -> None:
+                bar_progres.progress(
+                    (total_utama + langkah) / total_semua,
+                    text=f"Multi-skenario: {teks}...",
+                )
 
             hasil_baru = jalankan_eksperimen(
                 data,
                 Konfigurasi(),
                 jumlah_run=30,
-                progress_callback=update_progres,
+                progress_callback=update_utama,
+            )
+            hasil_baru["multi_skenario"] = jalankan_multi_skenario(
+                data,
+                jumlah_run=30,
+                progress_callback=update_sken,
             )
             bar_progres.empty()
             st.session_state["eksperimen_data"] = hasil_baru
@@ -504,12 +662,16 @@ ditangani menggunakan **fungsi penalti** yang dinormalisasi terhadap batas masin
   4. Arsip eksternal (maksimal 100 solusi) diisi solusi non-dominasi; jika penuh, solusi dibuang secara acak dari *hypercube* terpadat. `pbest` diperbarui bila posisi baru mendominasi atau acak 50% bila saling non-dominasi.
 - **Front Sejati (Brute Force)**: mengevaluasi seluruh {total_komb:,} kombinasi sebagai acuan *ground truth*.
 
-### Metrik Evaluasi
-Semua metrik dihitung dari **titik objektif unik** (`np.unique`) dengan titik acuan `[300, 15]`:
-- **Hypervolume (HV)**: luas daerah yang didominasi front terhadap `[300, 15]`, dinormalisasi ke `[0, 1]` (makin besar makin baik).
-- **Spacing**: simpangan baku jarak tiap titik ke tetangga terdekatnya pada ruang ternormalisasi (makin kecil makin rata).
-- **IGD (Inverted Generational Distance)**: rata-rata jarak minimum dari tiap titik front sejati ke titik hasil algoritma (makin kecil makin dekat dan lengkap).
-- **Uji Statistik**: **Wilcoxon rank-sum test** pada nilai **HV** dan **IGD** dari 30 run independen (`α = 0.05`).
+### Titik Acuan, Metrik Evaluasi & Multi-skenario
+- **Titik Acuan Dinamis**: ditentukan dari `np.maximum(2 * F_SEJATI.max(axis=0), 1.0)` berdasarkan Pareto front sejati dari konfigurasi yang sedang aktif (pada baseline default bernilai `[300, 12]`). Jika target atau batasan di sidebar diubah ataupun antar-skenario berbeda, titik acuan ikut menyesuaikan secara otomatis, termasuk untuk normalisasi metrik dan pilihan **Kompromi**.
+- Semua metrik dihitung dari **titik objektif unik** (`np.unique`):
+  - **Hypervolume (HV)**: luas daerah yang didominasi front terhadap titik acuan, dinormalisasi ke `[0, 1]` (makin besar makin baik).
+  - **Spacing**: simpangan baku jarak tiap titik ke tetangga terdekatnya pada ruang ternormalisasi (makin kecil makin rata).
+  - **IGD (Inverted Generational Distance)**: rata-rata jarak minimum dari tiap titik front sejati ke titik hasil algoritma (makin kecil makin dekat dan lengkap).
+- **Uji Statistik & Effect Size**:
+  - **Wilcoxon rank-sum test** pada nilai **HV** dan **IGD** dari 30 run independen (`α = 0.05`).
+  - **Vargha-Delaney A12** untuk HV: mengukur peluang nilai HV MOGA lebih besar daripada HV MOPSO (`A12 > 0.5` menguntungkan MOGA; patokan besar efek: `0.56` kecil, `0.64` sedang, `0.71` besar).
+- **Eksperimen Multi-skenario**: pengujian diulang pada 4 skenario (**S1 Baseline**, **S2 Batasan sedang**, **S3 Batasan ketat**, dan **S4 Target 800 kkal**) untuk memastikan kesimpulan konsisten di berbagai kondisi batasan dan target kalori, termasuk persentase run yang berhasil menemukan seluruh titik front sejati (**Lengkap**).
 
 ### Referensi
 1. **Fonseca, C. M., & Fleming, P. J. (1993).** *Genetic Algorithms for Multiobjective Optimization: Formulation, Discussion and Generalization*. Proceedings of the Fifth International Conference on Genetic Algorithms (ICGA), 416–423.

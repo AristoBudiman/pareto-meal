@@ -1,3 +1,5 @@
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://pareto-meal-project-kk.streamlit.app)
+
 # Optimasi Multi-Objektif Pemilihan Menu McDonald's (MOGA vs MOPSO)
 
 Aplikasi demo Streamlit untuk proyek mata kuliah **Kecerdasan Komputasional**: mencari kombinasi menu McDonald's untuk satu kali makan (1 menu utama, maksimal 1 lauk, dan 1 minuman) menggunakan optimasi multi-objektif, serta membandingkan kinerja **MOGA** dan **MOPSO** terhadap **Pareto front sejati** (*brute force*).
